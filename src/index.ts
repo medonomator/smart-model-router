@@ -1,10 +1,16 @@
-const serviceName = 'smart-model-router';
+import { createServer, SERVICE_NAME } from './server';
 
-function main(): void {
-  console.log(`${serviceName} ready`);
-  // TODO: Implement Task 1 from README Tasks - declarative routing table for path and method.
-  // TODO: Implement Task 2 from README Tasks - token-bucket rate limiter with in-memory state.
-  // TODO: Implement Task 3 from README Tasks - circuit breaker per upstream with metrics.
-}
+const port = Number(process.env.PORT) || 3000;
+const server = createServer();
 
-main();
+server.listen(port, () => {
+  console.log(`${SERVICE_NAME} listening on http://localhost:${port}`);
+});
+
+const shutdown = (signal: string) => () => {
+  console.log(`${signal} received, shutting down`);
+  server.close(() => process.exit(0));
+};
+
+process.on('SIGINT', shutdown('SIGINT'));
+process.on('SIGTERM', shutdown('SIGTERM'));
