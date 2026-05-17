@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "test": "node --require ts-node/register --test src/**/*.test.ts"
+    "test": "find src -name '*.test.ts' -print0 | xargs -0 node --require ts-node/register --test"
   },
   "engines": {
     "node": ">=20"
