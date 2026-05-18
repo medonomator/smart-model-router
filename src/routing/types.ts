@@ -5,6 +5,7 @@ export type UpstreamStatus = 'available' | 'draining' | 'unavailable';
 export interface UpstreamEndpoint {
   readonly url: string;
   readonly status: UpstreamStatus;
+  readonly weight?: number;
 }
 
 export interface UpstreamPool {
