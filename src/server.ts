@@ -6,6 +6,8 @@ import { checkAndConsume } from './ratelimit/limiter';
 import { InMemoryLimiterBackend } from './ratelimit/memory-backend';
 import { DEFAULT_RATE_LIMIT_POLICIES } from './ratelimit/policies';
 import { LimiterBackend, RateLimitPolicy } from './ratelimit/types';
+import { WeightedRoundRobinBalancer } from './balancing/weighted-rr';
+import { LoadBalancer } from './balancing/types';
 
 export const SERVICE_NAME = 'smart-model-router';
 
@@ -14,6 +16,7 @@ export interface ServerOptions {
   readonly backend?: LimiterBackend;
   readonly policies?: readonly RateLimitPolicy[];
   readonly clock?: () => number;
+  readonly balancer?: LoadBalancer;
 }
 
 /**
@@ -27,9 +30,10 @@ export function createServer(options: ServerOptions = {}) {
   const backend = options.backend ?? new InMemoryLimiterBackend();
   const policies = options.policies ?? DEFAULT_RATE_LIMIT_POLICIES;
   const clock = options.clock ?? Date.now;
+  const balancer = options.balancer ?? new WeightedRoundRobinBalancer();
 
   return createHttpServer((req: IncomingMessage, res: ServerResponse) => {
-    void handle(req, res, table, backend, policies, clock).catch((err) => {
+    void handle(req, res, table, backend, policies, clock, balancer).catch((err) => {
       // Backend I/O blew up (e.g. Redis down). Fail closed would lock the
       // whole gateway out the moment Redis hiccups, so we fail open and log;
       // a separate alert/metric is the right place to notice this, not the
@@ -47,6 +51,7 @@ async function handle(
   backend: LimiterBackend,
   policies: readonly RateLimitPolicy[],
   clock: () => number,
+  balancer: LoadBalancer,
 ): Promise<void> {
   const method = req.method ?? '';
   const url = req.url ?? '';
@@ -76,9 +81,13 @@ async function handle(
     return;
   }
 
+  const selected = balancer.pick(match.pool);
   respondJson(res, 200, {
     route: { method: match.rule.method, path: match.rule.path },
     pool: { name: match.pool.name },
+    upstream: selected
+      ? { url: selected.endpoint.url, status: selected.endpoint.status }
+      : null,
   });
 }
 

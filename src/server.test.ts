@@ -45,10 +45,13 @@ test('known route is dispatched to its upstream pool', async () => {
     const parsed = JSON.parse(body) as {
       route: { method: string; path: string };
       pool: { name: string };
+      upstream: { url: string; status: string } | null;
     };
     assert.equal(parsed.route.method, 'POST');
     assert.equal(parsed.route.path, '/v1/chat/completions');
     assert.equal(parsed.pool.name, 'llm-chat-default');
+    assert.ok(parsed.upstream);
+    assert.ok(parsed.upstream?.url.startsWith('http://'));
   } finally {
     await close(server);
   }

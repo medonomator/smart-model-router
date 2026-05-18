@@ -4,14 +4,15 @@ export const UPSTREAM_POOLS: readonly UpstreamPool[] = [
   {
     name: 'llm-chat-default',
     endpoints: [
-      { url: 'http://upstream-openai.mock/v1', status: 'available' },
-      { url: 'http://upstream-anthropic.mock/v1', status: 'available' },
+      { url: 'http://upstream-openai.mock/v1', status: 'available', weight: 10 },
+      { url: 'http://upstream-anthropic.mock/v1', status: 'available', weight: 5 },
+      { url: 'http://upstream-cohere.mock/v1', status: 'draining', weight: 10 },
     ],
   },
   {
     name: 'llm-embeddings',
     endpoints: [
-      { url: 'http://upstream-openai.mock/v1', status: 'available' },
+      { url: 'http://upstream-openai.mock/v1', status: 'available', weight: 10 },
     ],
   },
 ] as const;
