@@ -44,14 +44,24 @@ curl http://localhost:3000/health
 ```
 src/
   index.ts                       # entry point: env, listen, graceful shutdown
-  server.ts                      # тонкий HTTP-слой, делегирует роутеру
-  server.test.ts                 # smoke-тесты на HTTP поведение
+  server.ts                      # HTTP слой: lookup -> rate-limit -> dispatch
+  server.test.ts                 # smoke-тесты + 429-сценарии с виртуальными часами
   routing/
     types.ts                     # типы: HttpMethod, RoutingRule, UpstreamPool, RouteMatch
     upstream-pools.ts            # registry мок upstream pools
     routing-table.ts             # declarative rules + проверка ссылок на пулы
     router.ts                    # lookup(table, method, path) -> RouteMatch | null
     router.test.ts               # тесты на матчинг и отказы
+  ratelimit/
+    types.ts                     # TokenBucketLimits, RateLimitPolicy, LimiterBackend, ...
+    token-bucket.ts              # чистая функция refillAndConsume (без I/O, без clock)
+    token-bucket.test.ts         # детерминированные тесты на математику
+    policies.ts                  # DEFAULT_RATE_LIMIT_POLICIES + selectPolicy/policyKey
+    memory-backend.ts            # InMemoryLimiterBackend (process-local)
+    memory-backend.test.ts       # exhaust + refill + изоляция ключей
+    redis-backend.ts             # RedisLimiterBackend + atomic Lua script
+    redis-backend.test.ts        # FakeRedis-шим, верифицирующий аргументы скрипта
+    limiter.ts                   # checkAndConsume(match, backend, policies, now)
 ```
 
 Точка входа отделена от фабрики сервера, а фабрика - от policy layer: `server.ts` только парсит метод и URL и делегирует решение `routing/router.ts`. Routing table - это точка расширения для следующих задач (rate limiting, load balancing, observability крепятся к матченому правилу/пулу, а не к HTTP слою).
@@ -71,4 +81,54 @@ curl -i -X POST http://localhost:3000/v1/chat/completions
 curl -i http://localhost:3000/v1/chat/completions
 # 404 {"error":"not_found"}   # метод не описан в таблице для этого path
 ```
+
+## Rate limiting
+
+Token bucket поверх каждого матченого маршрута. Pipeline в `server.ts`:
+
+```
+request -> lookup(table) -> selectPolicy(match) -> backend.consume(key)
+                                                       |
+                                                       v
+                                          allowed -> dispatch
+                                          denied  -> 429 + Retry-After
+```
+
+Математика (`refillAndConsume` в `ratelimit/token-bucket.ts`) - чистая функция, без I/O и без `Date.now`. Два бэкенда переиспользуют одну и ту же логику: in-memory повторяет её напрямую, Redis-backend - в виде Lua-скрипта внутри одного `EVAL` (атомарно, чтобы две реплики не разрешили "последний" токен дважды).
+
+Политики лежат в `ratelimit/policies.ts`. Дефолт - per-pool:
+
+- `llm-chat-default`: capacity 60, refill 1 rps (минута burst, потом 1 запрос в секунду)
+- `llm-embeddings`: capacity 120, refill 2 rps (embeddings дешевле, лимит мягче)
+
+`selectPolicy` берёт route-scope в приоритет над pool-scope - так горячий path можно прижать сильнее, не переписывая весь пул. Когда ни одна политика не совпадает, запрос пропускается без учёта (rate limiting opt-in).
+
+Ответ при 429:
+
+```
+HTTP/1.1 429 Too Many Requests
+retry-after: 1
+content-type: application/json
+
+{"error":"rate_limited","reason":"token bucket exhausted","policy":"pool:llm-chat-default","retryAfterMs":1000,"capacity":60}
+```
+
+Backend выбирается переменной окружения:
+
+```bash
+# дефолт - process-local, состояние теряется на рестарте
+RATE_LIMIT_BACKEND=memory npm run dev
+
+# распределённый - общий бакет на все реплики
+RATE_LIMIT_BACKEND=redis REDIS_URL=redis://localhost:6379 npm run dev
+```
+
+`ioredis` ставится только если планируется Redis - в memory-режиме пакет не загружается (`require` отложен внутрь фабрики бэкенда).
+
+Тесты:
+
+- `token-bucket.test.ts` - арифметика на детерминированных часах (exhaust, refill, clock skew, fractional retry)
+- `memory-backend.test.ts` - корректная изоляция ключей и refill через "время"
+- `redis-backend.test.ts` - FakeRedis-шим повторяет Lua построчно; расходится скрипт и шим - тест падает
+- `server.test.ts` - 429 + Retry-After на исчерпанный бакет, восстановление по виртуальным часам
 
